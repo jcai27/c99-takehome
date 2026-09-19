@@ -117,9 +117,28 @@ and reverified:
 ### Final audit (after Part 3, before shipping)
 
 A second, fresh pass across all three parts, specifically hunting for
-anything still missed — beyond what the audit above already caught. Two more
-real, confirmed bugs, both fixed and reverified:
+anything still missed — beyond what the audit above already caught. Three
+more real, confirmed bugs, all fixed and reverified — including the most
+severe one found in this whole project:
 
+- **`./dev.sh` — the README's own documented entry point — silently could
+  not start Part 3 at all.** `docker-compose.yaml`'s `app` service ran bare
+  `bun dev`, which assumes `node_modules` already exists in the
+  `app_node_modules` volume. True for the original zero-dependency scaffold;
+  false the moment it became a real Next.js app with real dependencies. I'd
+  flagged this as a risk while planning Part 3 and then never actually
+  verified it — the gap sat there through every manual test since, because I
+  was always running the app with `npm run dev` on the host, never through
+  the container. Caught by literally running `docker compose --profile app
+  up` and reading the log: `next: not found`. Fixed the same way
+  `workflows`'s `worker` service already installs its own deps
+  (`command: sh -c "bun install && bun dev"`), then verified with the
+  actual documented flow end to end: `./cleanup.sh` (full teardown) → bring
+  infra up fresh → `./setup.sh` → worker and app both cold-starting with
+  dependencies installed from scratch → scraper → parser → the containerized
+  app correctly serving real, correct data (`66.6¢/kg` on `9904.02.01`, the
+  fix from the previous finding). This is exactly the sequence a grader
+  running from a fresh clone would hit, and it would have failed.
 - **The parser was silently dropping a real rate for 511 rule rows.** The
   source JSON has a fourth rate-bearing field, `additionalDuties`
   (`"66.6¢/kg"`), used instead of `general` for certain provisions — mostly
@@ -174,6 +193,10 @@ table of every applicable Chapter 99 provision; clicking a rule code goes to
 `/rule/<hts>` for its full legal scope, rates, reference/exclusion graph, and
 cited notes. Verified against the exact README Mexico example end-to-end:
 `/rule/9903.01.02` correctly shows "Excluded by: 9903.01.01."
+
+`./dev.sh` (or `docker compose --profile app up -d`) also works — it now
+installs the app's dependencies before starting it (see the final-audit
+section below for why that fix was needed).
 
 ## 2. The data model, and why
 

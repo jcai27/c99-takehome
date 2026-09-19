@@ -178,7 +178,10 @@ services:
     profiles: ["app"]
     image: oven/bun:1.3.3-alpine
     working_dir: /app
-    command: bun dev
+    # bun dev alone assumes node_modules already exists -- true for the
+    # original dependency-free scaffold, not for a real Next.js app. Install
+    # first, same pattern as the worker service's uv sync.
+    command: sh -c "bun install && bun dev"
     ports:
       - "3000:3000"
     depends_on:

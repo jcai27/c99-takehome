@@ -3,3 +3,6 @@ node_modules/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+# The containerized app service installs via bun (see docker-compose.yaml);
+# package-lock.json (npm, the documented host path) stays authoritative.
+bun.lock

@@ -248,6 +248,18 @@ that reloads the base tables also refreshes what's derived from them, so
 there's no separate schedule to forget. Two `pg_trgm` GIN indexes back
 fuzzy search the same way — an index built once, not recomputed per request.
 
+**Added after the fact: request-level caching**, once it came up in
+conversation — every lookup query (`lib/queries.ts`) is wrapped in Next's
+`unstable_cache` with a 1-day revalidate, so a repeat visit to a code or
+rule never touches Postgres again until the entry ages out. Verified, not
+assumed: warmed two pages, stopped the `db` container entirely, re-requested
+them — both still returned 200 with real data, while an unvisited code
+correctly 500'd. Search stays uncached on purpose (unbounded query
+cardinality vs. the bounded set of codes/rules people revisit — see
+`app/README.md`). The honest tradeoff: nothing currently ties cache
+invalidation to a parser run, so a fix or a new revision can take up to a
+day to show up on an already-visited page without an app restart.
+
 **A real bug the app surfaced, caught before shipping**: the obvious query
 ("`rule_edge.target_hts = this code`") resolved only 13% of real references.
 Chapter 99 cites codes at 8-digit precision; a lot of `hts_base` rows only
@@ -319,6 +331,12 @@ Blunt, in rough priority order:
   `hts_base`/`rule`/etc. only ever hold the latest one — there's no "what did
   this look like under Rev15" view. Deliberate scope (see the data-model
   section), but worth naming as a real limitation, not an oversight.
+- **App cache has no invalidation hook tied to a parser run.** It's a 1-day
+  revalidate, so after rerunning the parser, an already-cached page can
+  serve last revision's answer for up to a day. A `revalidateTag` API route
+  the parser calls after `finalize` would close this — same "keep it true"
+  problem the materialized view already solves, just not extended to the
+  app's own cache.
 
 ## 5. Assumptions
 

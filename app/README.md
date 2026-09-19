@@ -56,6 +56,22 @@ common shape in the source data, not every subheading has its own bare
 target_hts || '.%'`, not bare equality -- exact-match alone silently misses
 most real matches (see the audit in `SUBMISSION.md`).
 
+**Every lookup query is cached** (`unstable_cache`, 1-day revalidate, in
+`lib/queries.ts`) -- the breadcrumb, applicable-rules table, a rule's own
+detail/references/notes, and the landing-page examples. A repeat visit to a
+code or rule never touches Postgres until the cache entry ages out.
+Verified directly: warm a page, stop the `db` container, request it again --
+still 200 with real data, while an unvisited code correctly 500s. Search
+(`searchHtsBase`) is deliberately left uncached -- free-text queries have far
+higher cardinality than the bounded set of codes/rules people actually
+revisit, so caching every distinct typed string would mostly grow the cache
+for one-off lookups rather than cut real repeat work; it's already fast via
+the `pg_trgm` indexes either way. One tradeoff worth knowing: after a fresh
+parser run, a previously-cached code/rule page can serve up to a day of
+stale data before picking up the change -- there's no invalidation hook tying
+the app to parser runs (a `revalidateTag` API route the parser calls after
+`finalize` would close that gap, not built here).
+
 ## What this deliberately doesn't do
 
 - **No stacking-order resolution.** When several provisions apply to one

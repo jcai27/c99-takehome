@@ -114,6 +114,52 @@ and reverified:
   a dot-prefix of the stored code" resolves 98.4%. Part 3's queries use the
   latter.
 
+### Final audit (after Part 3, before shipping)
+
+A second, fresh pass across all three parts, specifically hunting for
+anything still missed — beyond what the audit above already caught. Two more
+real, confirmed bugs, both fixed and reverified:
+
+- **The parser was silently dropping a real rate for 511 rule rows.** The
+  source JSON has a fourth rate-bearing field, `additionalDuties`
+  (`"66.6¢/kg"`), used instead of `general` for certain provisions — mostly
+  subchapter IV's Section 22 quota price-bracket ladders (`"Valued less than
+  25¢/kg"`, etc.). I was only ever reading `general`, so these rows showed
+  "not stated" in the app despite a real, specific rate sitting right there
+  in the data. Fixed with a fallback in `load_rules`
+  (`categorize(general) or categorize(additionalDuties)`); `rate_kind =
+  'specific'` went from 3 rows to 460 after the fix. (`quotaQuantity` and the
+  misspelled `addiitionalDuties` field are always empty in the real data —
+  confirmed, not just assumed — so nothing else is being silently dropped
+  there.)
+- **A PDF text-extraction false positive was swallowing two real notes.**
+  The boilerplate phrase "...in lieu of the rate provided in chapters 1
+  through 97." happened to line-wrap so `"97."` landed at the start of a
+  line — indistinguishable from a real note boundary by the
+  monotonically-increasing heuristic alone (97 > 1, so it was accepted,
+  eating subchapter XX's real notes 2 and 3 into its body). Fixed by
+  rejecting any candidate immediately preceded by "through" — the standard
+  English range-connector, and exactly what precedes every instance of this
+  pattern in the source. Verified: subchapter XX now correctly shows notes
+  1, 2, 3; overall note-citation resolution went from 65/67 to 66/67.
+
+**Documented, not fixed** (real, but lower priority than what's above):
+- `hts_base` doesn't capture `special`/`other` preferential-program text at
+  all (7,099 and 11,415 real rows have it) — asymmetric with `rule`, which
+  does. Lower priority since it's base-schedule FTA eligibility, not the
+  Chapter 99 story this app tells.
+- `units` (unit of quantity, e.g. "kg", "No.") is populated on ~76% of base
+  rows and entirely unused.
+- One remaining unresolved note citation is a **source-document**
+  inconsistency, not ours: a footnote on `9903.88.16` cites "note 20 to this
+  chapter," almost certainly meaning subchapter III's own note 20 (which
+  exists, and is about the same tariff family), but literally says
+  "chapter." Left unresolved rather than guessed at.
+- `code`/search query values flow into SQL `LIKE` patterns unescaped, so a
+  literal `%` or `_` in the input acts as a wildcard. Not a security issue
+  (fully parameterized, no injection possible) — just a correctness quirk on
+  deliberately unusual input, e.g. a URL someone hand-edits.
+
 ### Part 3 — App
 
 ```bash
@@ -337,6 +383,13 @@ Blunt, in rough priority order:
   the parser calls after `finalize` would close this — same "keep it true"
   problem the materialized view already solves, just not extended to the
   app's own cache.
+- **`hts_base` doesn't carry `special`/`other` preferential-program text**
+  (found in the final audit — `rule` has this, `hts_base` doesn't; real data
+  on ~7k/~11k rows, just not modeled).
+- **URL/search input flows into SQL `LIKE` patterns unescaped**, so a
+  literal `%` or `_` acts as a wildcard on deliberately unusual input. Not a
+  security issue — fully parameterized, no injection — just a correctness
+  quirk worth an `ESCAPE` clause with another pass.
 
 ## 5. Assumptions
 

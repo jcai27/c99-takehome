@@ -22,6 +22,14 @@ _SUBCHAPTER_HDR_RE = re.compile(r"^SUBCHAPTER\s+([IVXLCDM]+)\s*$", re.MULTILINE)
 _US_NOTES_RE = re.compile(r"^U\.S\. Notes(?:\s*\(con\.\))?\s*$", re.MULTILINE)
 _STAT_NOTES_RE = re.compile(r"^Statistical Notes(?:\s*\(con\.\))?\s*$", re.MULTILINE)
 _NOTE_ITEM_RE = re.compile(r"^(\d+)\.\s+", re.MULTILINE)
+# "...in lieu of the rate provided in chapters 1 through\n97." -- a range
+# endpoint that happens to line-wrap onto its own line, indistinguishable
+# from a note boundary by the regex above alone. Confirmed against real
+# data: this is exactly why subchapter XX's real notes 2 and 3 went missing
+# (swallowed into a bogus "note 97"). "chapters 1 through 97/98" is common
+# boilerplate throughout these notes, so this guard checks the text
+# immediately before a candidate match for the standard range-connector.
+_RANGE_CONNECTOR_RE = re.compile(r"\bthrough\s*$", re.IGNORECASE)
 
 _TABLE_HEADER_TOKENS = ("Rates of Duty", "Article Description", "Heading/", "Subheading")
 
@@ -98,6 +106,8 @@ def _split_notes(
     matches = []
     last_accepted = 0
     for m in all_matches:
+        if _RANGE_CONNECTOR_RE.search(text[: m.start()]):
+            continue  # "chapters 1 through 97." -- a range endpoint, not a note
         num = int(m.group(1))
         if num > last_accepted:
             matches.append(m)

@@ -188,7 +188,13 @@ def load_rules(input: ParserInput, ctx: Context) -> LoadResult:
     records = []
     for node in nodes:
         subchapter = subchapter_of(node.htsno)
-        rate = categorize(node.raw.get("general"))
+        # `general` is blank on ~511 real rows (price-bracket/quota
+        # provisions, e.g. subchapter IV's "Valued less than 25c/kg" ladder)
+        # whose actual rate lives in the source JSON's `additionalDuties`
+        # field instead -- confirmed against real data, and previously
+        # missed entirely, which meant these rows showed "not stated" even
+        # though a real specific rate ("66.6c/kg") was sitting right there.
+        rate = categorize(node.raw.get("general")) or categorize(node.raw.get("additionalDuties"))
         if rate is None:
             rate_kind, rate_value, rate_text = "other", None, None
         else:

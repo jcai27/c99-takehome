@@ -1,0 +1,5 @@
+# Downloads live here and stay out of git — the Chapter 99 JSON is ~2 MB and the
+# notes PDF is ~14 MB. Ignore everything except this file and .gitkeep.
+*
+!.gitignore
+!.gitkeep

@@ -1,0 +1,217 @@
+services:
+  # ============================================
+  # Your application database.
+  # This is where your Chapter 99 tables go.
+  # Reachable from your host on localhost:5432
+  # and from other containers as db:5432
+  #
+  # Everything is published on the stock ports, so
+  # stop anything already on 5432/8080/3000 first.
+  # ============================================
+  db:
+    image: postgres:16.3
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: chp99
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ============================================
+  # Hatchet Lite - workflow orchestration
+  #
+  #   Admin UI : http://localhost:8080   (no login)
+  #   gRPC     : localhost:7077
+  #
+  # This is the -dev image, which has authentication
+  # compiled out: the dashboard opens straight up,
+  # no login. Workers still authenticate over gRPC,
+  # but the image ships one fixed non-expiring token
+  # that's committed in workflows/.env — so there is
+  # nothing to set up.
+  #
+  # Uses PostgreSQL as its message queue rather than
+  # RabbitMQ. Slower under real load, but one less
+  # service to run for a take-home.
+  #
+  # Docs: https://docs.hatchet.run/self-hosting/hatchet-lite
+  # ============================================
+  hatchet:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite-dev:v0.94.10
+    ports:
+      - "8080:8888"
+      - "7077:7077"
+    depends_on:
+      hatchet_db:
+        condition: service_healthy
+    volumes:
+      - hatchet_lite_config:/config
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@hatchet_db:5432/hatchet_db?sslmode=disable
+      - SERVER_MSGQUEUE_KIND=postgres
+
+      - SERVER_URL=http://localhost:8080
+      - SERVER_GRPC_BIND_ADDRESS=0.0.0.0
+      - SERVER_GRPC_INSECURE=t
+      # Handed out in the token, and dialed by the server's own API. Published
+      # as 7077:7077 so one value works from both sides: host workers reach it
+      # through the port mapping, the in-container dial finds 7077 bound.
+      - SERVER_GRPC_BROADCAST_ADDRESS=localhost:7077
+      - SERVER_GRPC_PORT=7077
+
+      # Auth is compiled out of this image, but the config still generates
+      # cookie secrets, and hatchet-admin needs them to mint worker tokens.
+      - SERVER_AUTH_COOKIE_DOMAIN=localhost
+      - SERVER_AUTH_COOKIE_INSECURE=t
+
+      - SERVER_LOGGER_LEVEL=error
+      - SERVER_LOGGER_FORMAT=console
+      - DATABASE_LOGGER_LEVEL=warn
+      - DATABASE_LOGGER_FORMAT=console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    restart: unless-stopped
+
+  # ============================================
+  # Your Hatchet worker.
+  #
+  #   docker compose --profile worker up -d
+  #   docker compose logs -f worker
+  #
+  # Bind-mounts ./workflows. Run it with
+  #
+  #   docker compose --profile worker watch
+  #
+  # and edits to .py files restart the worker for
+  # you — Python caches imported modules, so a
+  # long-running worker otherwise keeps serving the
+  # old code with no error to tell you. Opt-in, like
+  # the app service — running it on your host gives
+  # you a faster loop and a debugger.
+  # See workflows/README.md.
+  # ============================================
+  worker:
+    profiles: ["worker"]
+    image: python:3.11-slim
+    working_dir: /workflows
+    # uv is installed into the image on start; the venv lives in a named volume
+    # so it survives restarts and stays off the bind mount.
+    command: >
+      sh -c "pip install --quiet --root-user-action=ignore uv &&
+             uv sync &&
+             uv run python -m worker"
+    depends_on:
+      hatchet:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    env_file:
+      # Committed to the repo — the dev image's fixed worker token is not a
+      # secret. See the comments in that file.
+      - ./workflows/.env
+    environment:
+      # The broadcast address is localhost:7077, which from inside a container
+      # points at the container itself. Override it to the service name.
+      HATCHET_CLIENT_HOST_PORT: hatchet:7077
+      HATCHET_CLIENT_TLS_STRATEGY: none
+      # Your data lives here, not on localhost:5432, once you're on the network.
+      DATABASE_URL: postgres://postgres:postgres@db:5432/chp99
+      # Venv on a named volume, off the bind mount, so it can't collide with a
+      # .venv you built on the host.
+      UV_PROJECT_ENVIRONMENT: /venv
+      # The volume and the mount are different filesystems, so hardlinking fails.
+      UV_LINK_MODE: copy
+      # Where to put downloads. Same path in the container as on your host, so a
+      # scraper writing here works either way.
+      DATA_DIR: /data
+    volumes:
+      - ./workflows:/workflows
+      - worker_venv:/venv
+      # Downloads survive the container and are visible on your host.
+      - ./data:/data
+    restart: unless-stopped
+    # `docker compose --profile worker watch` acts on these; a plain `up` ignores
+    # them, so the service behaves exactly as before if you don't opt in.
+    develop:
+      watch:
+        # Editing a workflow restarts the process, which is what clears Python's
+        # module cache. The bind mount above already makes the file visible.
+        - action: restart
+          path: ./workflows
+          target: /workflows
+          include: ["**/*.py"]
+          ignore: ["**/__pycache__/**", ".venv/**"]
+        # A new dependency needs `uv sync`, which runs in the start command --
+        # so restarting is enough here too. (`rebuild` needs a build context,
+        # and this service runs a stock image.)
+        - action: restart
+          path: ./workflows/pyproject.toml
+          target: /workflows/pyproject.toml
+
+  # ============================================
+  # The Part 3 scaffold, containerized.
+  #
+  #   docker compose --profile app up -d
+  #   → http://localhost:3000
+  #
+  # Opt-in, because running it on your host is the
+  # smoother path — bind-mounted node_modules and
+  # file watching are both slower in a container,
+  # especially on macOS. See app/README.md.
+  #
+  # If you replace the scaffold with another stack,
+  # rewrite or delete this service. It is not load-
+  # bearing for anything else in the compose file.
+  # ============================================
+  app:
+    profiles: ["app"]
+    image: oven/bun:1.3.3-alpine
+    working_dir: /app
+    command: bun dev
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # db:5432 rather than localhost:5432 — we're on the compose network here.
+      DATABASE_URL: postgres://postgres:postgres@db:5432/chp99
+      PORT: 3000
+    volumes:
+      - ./app:/app
+      # Keeps container deps off the bind mount, so they don't collide with
+      # whatever your host installed.
+      - app_node_modules:/app/node_modules
+
+  # Hatchet's internal database. Not for your data.
+  hatchet_db:
+    image: postgres:16.3
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hatchet_db
+    volumes:
+      - hatchet_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  hatchet_postgres_data:
+  hatchet_lite_config:
+  app_node_modules:
+  worker_venv:
